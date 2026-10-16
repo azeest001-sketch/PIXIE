@@ -1,0 +1,6 @@
+{
+  "name": "Atelier Print Studio — Spline & 3D Print Calibration",
+  "description": "Interactive 3D print material and lighting studio for calibrating Spline cursor-tracking photo scenes and upgrading flat digital textures into archival gallery prints.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

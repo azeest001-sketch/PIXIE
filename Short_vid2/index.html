@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title></title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        background: #000;
+      }
+
+      canvas {
+        position: fixed;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scroll-sequence"></canvas>
+    <div id="scroll-space"></div>
+    <script>
+      const START_FRAME = 21;
+      const END_FRAME = 150;
+      const FRAME_COUNT = END_FRAME - START_FRAME + 1;
+      const PX_PER_FRAME = 56;
+      const LERP = 0.18;
+      const FADE_END = 0.28;
+
+      const canvas = document.getElementById("scroll-sequence");
+      const space = document.getElementById("scroll-space");
+      const ctx = canvas.getContext("2d", { alpha: false });
+      const frames = new Array(FRAME_COUNT);
+
+      let targetIndex = 0;
+      let currentIndex = 0;
+      let overlay = 1;
+      let targetOverlay = 1;
+
+      function smoothstep(t) {
+        t = Math.min(1, Math.max(0, t));
+        return t * t * (3 - 2 * t);
+      }
+
+      function frameSrc(n) {
+        return `ezgif-frame-${String(n).padStart(3, "0")}.jpg`;
+      }
+
+      function resize() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(window.innerWidth * dpr);
+        canvas.height = Math.floor(window.innerHeight * dpr);
+        space.style.height = `${window.innerHeight * 1.35 + FRAME_COUNT * PX_PER_FRAME}px`;
+        render();
+      }
+
+      function loadFrames() {
+        for (let i = 0; i < FRAME_COUNT; i++) {
+          const img = new Image();
+          img.decoding = "async";
+          img.onload = () => {
+            if (Math.round(currentIndex) === i) render();
+          };
+          img.src = frameSrc(START_FRAME + i);
+          frames[i] = img;
+        }
+      }
+
+      function scrollProgress() {
+        const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+        return Math.min(1, Math.max(0, window.scrollY / max));
+      }
+
+      function drawCover(img) {
+        if (!img || !img.complete || !img.naturalWidth) return false;
+        const cw = canvas.width;
+        const ch = canvas.height;
+        if (!cw || !ch) return false;
+        const ir = img.naturalWidth / img.naturalHeight;
+        const cr = cw / ch;
+        let dw, dh, dx, dy;
+        if (ir > cr) {
+          dh = ch;
+          dw = ch * ir;
+          dx = (cw - dw) / 2;
+          dy = 0;
+        } else {
+          dw = cw;
+          dh = cw / ir;
+          dx = 0;
+          dy = (ch - dh) / 2;
+        }
+        ctx.drawImage(img, dx, dy, dw, dh);
+        return true;
+      }
+
+      function drawOverlay() {
+        const cw = canvas.width;
+        const ch = canvas.height;
+        if (!cw || !ch || overlay <= 0.001) return;
+
+        ctx.fillStyle = `rgba(0,0,0,${overlay})`;
+        ctx.fillRect(0, 0, cw, ch);
+
+        const cx = cw * 0.5;
+        const cy = ch * 0.42;
+        const inner = Math.min(cw, ch) * (0.12 + (1 - overlay) * 0.5);
+        const outer = Math.hypot(cw, ch) * 0.65;
+        const gradient = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+        gradient.addColorStop(0, "rgba(0,0,0,0)");
+        gradient.addColorStop(0.45, `rgba(0,0,0,${overlay * 0.25})`);
+        gradient.addColorStop(1, `rgba(0,0,0,${Math.min(1, overlay * 0.7)})`);
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, cw, ch);
+      }
+
+      function render() {
+        const i = Math.round(Math.min(FRAME_COUNT - 1, Math.max(0, currentIndex)));
+        if (!drawCover(frames[i])) {
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        drawOverlay();
+      }
+
+      function tick() {
+        const p = scrollProgress();
+        targetOverlay = 1 - smoothstep(p / FADE_END);
+        overlay += (targetOverlay - overlay) * LERP;
+        if (Math.abs(targetOverlay - overlay) < 0.001) overlay = targetOverlay;
+
+        targetIndex = p * (FRAME_COUNT - 1);
+        currentIndex += (targetIndex - currentIndex) * LERP;
+        if (Math.abs(targetIndex - currentIndex) < 0.002) currentIndex = targetIndex;
+
+        render();
+        requestAnimationFrame(tick);
+      }
+
+      window.addEventListener("resize", resize, { passive: true });
+      resize();
+      loadFrames();
+      requestAnimationFrame(tick);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.db
+backend/data/*.db
+.tools/
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+.vite/

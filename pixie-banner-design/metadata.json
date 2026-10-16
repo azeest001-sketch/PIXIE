@@ -1,0 +1,6 @@
+{
+  "name": "Mindly Banner Design",
+  "description": "Minimalist black-background hero banner recreation for Mindly mindfulness platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
