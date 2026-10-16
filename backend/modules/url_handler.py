@@ -3,7 +3,7 @@ url_handler.py
 --------------
 FEATURE: Collector (parse incoming product links)
 
-TODO (owner): identify Amazon / Flipkart / Myntra / Ajio from a URL
+TODO (owner): identify Amazon / Flipkart from a URL
 and pull the unique product id with platform-specific logic.
 Do not fetch prices here.
 """
@@ -11,7 +11,7 @@ Do not fetch prices here.
 
 def detect_platform(url: str) -> str:
     """Identifies the URL's platform. Placeholder until a teammate implements it."""
-    # TODO: parse hostname (amazon.in, flipkart.com, myntra.com, ajio.com, ...)
+    # TODO: parse hostname (amazon.in, flipkart.com, ...)
     return "amazon"
 
 

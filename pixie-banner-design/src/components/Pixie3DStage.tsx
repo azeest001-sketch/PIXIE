@@ -164,7 +164,7 @@ function renderReferencePaletteCard(
     // Bottom Subtitle in Soft Blush (#F9E6EC)
     ctx.fillStyle = roseQuartzPink; // #E7B8C6
     ctx.font = '600 22px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText('DEALS UNDER ₹1,999 · AMAZON · FLIPKART · MYNTRA · AJIO', 64, 565);
+    ctx.fillText('DEALS UNDER ₹1,999 · AMAZON · FLIPKART', 64, 565);
   } else if (card.slotType === 'sale-bag-icon') {
     // Card 1 (Top Right): Bright Warm Cream (#FDF6E7) Product Frame + Champagne Gold (#EFCF92) Steal Price
     ctx.save();
@@ -198,7 +198,7 @@ function renderReferencePaletteCard(
 
     ctx.fillStyle = roseQuartzPink; // #E7B8C6
     ctx.font = '600 20px "JetBrains Mono", monospace';
-    ctx.fillText(card.storeName || 'MYNTRA · AJIO', 525, 142);
+    ctx.fillText(card.storeName || 'AMAZON · FLIPKART', 525, 142);
 
     ctx.fillStyle = warmCream; // #FDF6E7
     ctx.font = '700 30px "Plus Jakarta Sans", sans-serif';

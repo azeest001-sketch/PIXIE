@@ -28,18 +28,10 @@ def fetch_flipkart_product(product_id: str) -> dict:
     return {"placeholder": True, "platform": "flipkart", "id": product_id}
 
 
-def fetch_myntra_product(product_id: str) -> dict:
-    """Calls the Myntra RapidAPI endpoint and returns the raw response."""
-    # TODO: RapidAPI Myntra host from MYNTRA_RAPIDAPI_HOST
-    return {"placeholder": True, "platform": "myntra", "id": product_id}
-
-
 def fetch_product(platform: str, product_id: str) -> dict:
     """Routes to fetch_<platform>_product(id)."""
     if platform == "flipkart":
         return fetch_flipkart_product(product_id)
-    if platform == "myntra":
-        return fetch_myntra_product(product_id)
     return fetch_amazon_product(product_id)
 
 
