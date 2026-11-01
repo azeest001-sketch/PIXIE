@@ -1,16 +1,15 @@
 """
-monitor.py
-----------
-FEATURE: Collector + Alert loop
+MODULE 5: monitor.py
 
-check_tracked_products() pulls tracked rows, asks api_client for the
-current price, compares to target_price, stores a history row, and
-calls notifier.send_price_alert() if the price dropped.
+--> check_tracked_products() pulls all tracked products' rows from database.py, 
+calls api_client for the current price, compares it to the target_price, 
+stores a history row, and calls notifier.send_price_alert() if the price dropped to target_price.
 
-run_monitoring_loop() is the interval loop (while True + time.sleep).
-scheduler.py is separate — it only decides WHEN to call
-check_tracked_products(), it does not fetch prices itself.
+--> run_monitoring_loop() is the interval loop (while True + time.sleep).
+
 """
+#----------------------------------------------------------------------------------------------------------------------------------------
+# IMPORTS
 
 import time
 import os
@@ -18,14 +17,13 @@ from dotenv import load_dotenv
 
 from . import database, api_client, notifier
 
+#----------------------------------------------------------------------------------------------------------------------------------------
+
 load_dotenv()
 
 
 def check_tracked_products() -> list[dict]:
-    """
-    Pull all tracked products from database.py, call api_client for the
-    current price, compare to target_price, and alert if it dropped.
-    """
+    
     # TODO: replace this placeholder pass-through with real fetch + compare
     results = []
     for product in database.get_tracked_products():

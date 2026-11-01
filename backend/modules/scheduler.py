@@ -1,19 +1,22 @@
 """
-scheduler.py
-------------
-Separate module that triggers price fetches and checks at set clock times
-so tracked products are monitored automatically.
+MODULE 6: scheduler.py
 
-It ONLY decides when to run. At each scheduled time it calls
-monitor.check_tracked_products(). It does not talk to RapidAPI itself.
+--> Triggers price fetches and checks at set clock times so tracked products are monitored automatically.
+--> It only decides WHEN to run. 
+--> At each scheduled time it calls monitor.check_tracked_products(). 
 
 CHECK_TIMES in .env, e.g. 09:00,15:00,21:00
+
 """
+#----------------------------------------------------------------------------------------------------------------------------------------
+# IMPORTS
 
 import os
 from dotenv import load_dotenv
 
 from .monitor import check_tracked_products
+
+#----------------------------------------------------------------------------------------------------------------------------------------
 
 load_dotenv()
 
