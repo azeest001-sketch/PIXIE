@@ -12,6 +12,7 @@ Supplies the price data points that database.py stores as price history & analyt
 #----------------------------------------------------------------------------------------------------------------------------------------
 # IMPORTS
 
+import re
 import os
 import time
 from datetime import datetime
@@ -33,18 +34,24 @@ HOSTS = {
     "flipkart": os.getenv("FLIPKART_RAPIDAPI_HOST", ""),
 }
 
-MAX_RETRIES = 3        # retry limit
+MAX_RETRIES = 2        # retry limit
 RETRY_DELAY = 2        # seconds between tries
-TIMEOUT = 10           # seconds per request
+TIMEOUT = 30           # seconds per request
 
 SUPPORTED_PLATFORMS = ("amazon", "flipkart")
 
-# Endpoint + id parameter name for each platform
-
-ENDPOINTS = {
-    "amazon":   {"path": "/product-details", "id_param": "asin"},
-    "flipkart": {"path": "/backend/rapidapi/product-details", "id_param": "pid"},
+# Product-details endpoint for each platform.
+PROD_ENDPOINTS = {
+    "amazon":   {"method": "GET",  "path": "/product-details", "id_param": "asin"},
+    "flipkart": {"method": "POST", "path": "/flipkart/v1/product", "id_param": "itm_id"},
 }
+
+# Search endpoint for each platform
+SEARCH_ENDPOINTS = {
+    "amazon":   {"method": "GET",  "path": "/search", "query_param": "query"},
+    "flipkart": {"method": "POST", "path": "/flipkart/v1/search", "query_param": "q"},
+}
+
 #----------------------------------------------------------------------------------------------------------------------------------------
 
 # API KEY CHECK
@@ -58,11 +65,12 @@ def load_api_key():
 
 #----------------------------------------------------------------------------------------------------------------------------------------
 # SEND REQUEST
-"""GET request for product details, with up to MAX_RETRIES attempts.
+"""GET or POST request, with up to MAX_RETRIES attempts.
+GET sends params in the URL, POST sends them as JSON body.
 Returns parsed JSON (dict) or None on failure.
 Error handling messages for potential errors"""
 
-def send_request(platform, path, params):
+def send_request(platform, path, params, method="GET"):
     key = load_api_key()
     if key is None:
         return None
@@ -73,11 +81,16 @@ def send_request(platform, path, params):
         return None
 
     headers = {"x-rapidapi-key": key, "x-rapidapi-host": host}
+    if method == "POST":
+        headers["Content-Type"] = "application/json"
     url = f"https://{host}{path}"
 
     for attempt in range(1, MAX_RETRIES + 1):
             try:
-                response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
+                if method == "POST":
+                    response = requests.post(url, headers=headers, json=params, timeout=TIMEOUT)
+                else:
+                    response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
     
                 # Bad key / no access (cannot retry here; need to check valid api and permissions)
                 if response.status_code in (401, 403):
@@ -97,10 +110,14 @@ def send_request(platform, path, params):
     
                 # <<< Valid response >>> --> parse JSON
                 try:
-                    return response.json()
+                    data = response.json()
                 except ValueError:
                     print("[api_client] Response was not valid JSON.")
                     return None
+                if isinstance(data, dict) and data.get("ok") is False:
+                    print("[api_client] API returned ok=false.")
+                    return None
+                return data
                 
             except (requests.ConnectionError, requests.Timeout):
                 print(f"[api_client] Connection problem (try {attempt}/{MAX_RETRIES})")
@@ -153,16 +170,27 @@ def normalize_response(raw, platform=None, product_id=None):
         external_id = data.get("asin") or product_id
 
     elif platform == "flipkart":
-        page_content = data.get("page_content") or {}
-        title = page_content.get("title")
-        price = clean_price(data.get("selling_price"))
-        mrp = clean_price(data.get("mrp"))
-        images = data.get("product_images") or []
-        image_url = images[0] if images else ""
-        product_url = data.get("url")
-        currency = "INR"
-        in_stock = None
-        external_id = data.get("unique_identifier") or product_id
+        # Flipkart Product Data API: everything is inside data["product"]
+        p = data.get("product")
+        if not isinstance(p, dict):
+            print("[api_client] Flipkart response has no 'product' object.")
+            return None
+
+        title = p.get("title")
+        if title:
+            # remove SEO suffix: "... Online at Best Price On Flipkart.com"
+            title = re.sub(r"\s*Online at Best Price.*$", "", title, flags=re.I).strip()
+
+        price = clean_price(p.get("price"))
+        mrp = clean_price(p.get("mrp"))
+        images = p.get("images") or []
+        image_url = p.get("image") or (images[0] if images else "")
+        if image_url.startswith("http://"):
+            image_url = "https://" + image_url[len("http://"):]
+        product_url = p.get("url")
+        currency = p.get("currency") or "INR"
+        in_stock = p.get("in_stock")   #already True/False
+        external_id = p.get("itm_id") or product_id
 
     else:
         print(f"[api_client] Unsupported platform: {platform}")
@@ -172,7 +200,7 @@ def normalize_response(raw, platform=None, product_id=None):
         print("[api_client] Price missing in response.")
         return None
     
-    # Convert Flipkart's relative URL into a full URL
+    # Convert relative URL into a full URL
     if platform == "flipkart" and product_url:
         if product_url.startswith("/"):
             product_url = "https://www.flipkart.com" + product_url
@@ -196,13 +224,13 @@ def normalize_response(raw, platform=None, product_id=None):
 
 def fetch_product(platform, product_id):
     """Fetches the raw product response for the specified platform."""
-    endpoint = ENDPOINTS[platform]
+    endpoint = PROD_ENDPOINTS[platform]
     params = {endpoint["id_param"]: product_id}
 
     if platform == "amazon":
         params["country"] = "IN"   # country is a required param by Amazon API endpoint
 
-    return send_request(platform, endpoint["path"], params)
+    return send_request(platform, endpoint["path"], params, endpoint["method"])
 #----------------------------------------------------------------------------------------------------------------------------------------
 # COMMON FUNCTIONS (used by other modules)
 
@@ -226,19 +254,45 @@ def get_current_price(platform, product_id):
     return product["price"] if product else None
 
 #----------------------------
-
-#----Facing issues with search as the flipkart api doesn't support search endpoint---- 
 def search_product(platform, query):
     """
-    -->Used for the platform comparison: searches the OTHER platform by title.
-    -->Returns the raw list of results (verification happens in analytics.py) or None.
+    Search one store by a short product name.
+    Returns a list of raw result dicts, or None when the search fails.
+    Amazon prices are for India (country=IN). The result list is inside
+    data.products (Amazon) or data.results (Flipkart).
+    analytics.py decides which result is the same item.
+    price comparison across platforms
     """
     if platform not in SUPPORTED_PLATFORMS:
         print(f"[api_client] Unsupported platform: {platform}")
         return None
-    raw = send_request(platform, "/search", {"query": query})
-    if raw is None:
+
+    ep = SEARCH_ENDPOINTS[platform]
+    params = {ep["query_param"]: query}
+    if platform == "amazon":
+        params["country"] = "IN"
+    
+    raw = send_request(platform, ep["path"], params, ep["method"])
+    if not isinstance(raw, dict):
         return None
-    return raw.get("data", [])
+    
+    data = raw.get("data")
+    if isinstance(data, dict):
+        products = data.get("products") or data.get("results")
+        if isinstance(products, list):
+            return products
+    if isinstance(data, list):
+        return data
+    return []
 
 #----------------------------------------------------------------------------------------------------------------------------------------
+# TEST BLOCK (run: python api_client.py)
+if __name__ == "__main__":
+    import sys
+
+    # Offline: 0 requests
+    fake = {"ok": True, "data": {"product": {
+        "itm_id": "itm3193199adbbec", "title": "Test Phone Online at Best Price On Flipkart.com",
+        "price": 8589, "mrp": 13999, "in_stock": True,
+        "image": "http://x/y.jpeg", "url": "https://www.flipkart.com/p/itm3193199adbbec"}}}
+    print(normalize_response(fake, "flipkart", "itm3193199adbbec"))

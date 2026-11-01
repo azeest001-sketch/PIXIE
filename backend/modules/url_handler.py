@@ -24,6 +24,7 @@ PLATFORMS = {
 #FORMAT/PATTERNS 
 
 AMAZON_ID = re.compile(r"/(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})")  # to match common Amazon URL formats,extract 10-char long productID
+FLIPKART_ITM = re.compile(r"/p/(itm[a-z0-9]+)", re.I)
 FLIPKART_KEEP = ("pid", "lid")     # parameters that identify the product/variant
 
 #----------------------------------------------------------------------------------------------------------------------------------------
@@ -85,7 +86,8 @@ def extract_product_id(url, platform):
         m = AMAZON_ID.search(urlparse(url).path)        # searches for matching format pattern, in the path part, of the parsed URL.
         return m.group(1) if m else None                # returns the captured ASIN code if match found.
     if platform == "flipkart":
-        return parse_qs(urlparse(url).query).get("pid", [None])[0]  #parses the query part of URL, retrieves the value(ID) for key pid
+        m = FLIPKART_ITM.search(urlparse(url).path)      # e.g. /p/itm3193199adbbec
+        return m.group(1) if m else None                ## captured itm ID, or None if no match
     return None
 
 #----------------------------------------------------------------------------------------------------------------------------------------
