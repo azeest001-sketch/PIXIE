@@ -1,40 +1,76 @@
 """
-scheduler.py
-------------
-Separate module that triggers price fetches and checks at set clock times
-so tracked products are monitored automatically.
+MODULE 6: scheduler.py
 
-It ONLY decides when to run. At each scheduled time it calls
-monitor.check_tracked_products(). It does not talk to RapidAPI itself.
-
-CHECK_TIMES in .env, e.g. 09:00,15:00,21:00
+--> Triggers price fetches and checks at set clock times, so tracked products are monitored automatically.
+--> At each scheduled time it calls monitor.check_tracked_products().
 """
+#----------------------------------------------------------------------------------------------------------------------------------------
 
 import os
 from dotenv import load_dotenv
 
 from .monitor import check_tracked_products
+#----------------------------------------------------------------------------------------------------------------------------------------
 
 load_dotenv()
+TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Kolkata")
 
+#----------------------------------------------------------------------------------------------------------------------------------------
 
 def get_check_times() -> list[str]:
-    raw = os.getenv("CHECK_TIMES", "09:00,15:00,21:00")
+    # Default: 2 checks/day (fits the Amazon 100 requests/month plan)
+    raw = os.getenv("CHECK_TIMES", "09:00,21:00")
     return [part.strip() for part in raw.split(",") if part.strip()]
 
+#----------------------------------------------------------------------------------------------------------------------------------------
+
+def run_check() -> None:
+    """One scheduled run. Errors are caught so the scheduler keeps going."""
+    print("[scheduler] Running price check...")
+    try:
+        results = check_tracked_products()
+        print(f"[scheduler] Check done: {len(results)} products.")
+    except Exception as e:
+        print(f"[scheduler] Check failed: {e}")
+
+#----------------------------------------------------------------------------------------------------------------------------------------
 
 def start_scheduler() -> None:
     """
-    Start the clock-based trigger.
-
-    TODO (owner): use APScheduler / schedule to fire at get_check_times()
-    and call check_tracked_products() each time. Do not put fetch logic here.
+    Start the clock-based trigger(blocks until stopped with Ctrl+C).
+    Needs: pip install "apscheduler<4"
     """
-    # from apscheduler.schedulers.blocking import BlockingScheduler
-    # scheduler = BlockingScheduler()
-    # for hhmm in get_check_times():
-    #     hour, minute = hhmm.split(":")
-    #     scheduler.add_job(check_tracked_products, "cron", hour=hour, minute=minute)
-    # scheduler.start()
-    print(f"[scheduler placeholder] would run check_tracked_products at {get_check_times()}")
-    check_tracked_products()
+    from apscheduler.schedulers.blocking import BlockingScheduler
+    scheduler = BlockingScheduler(timezone=TIMEZONE)
+
+    valid_times = []
+    
+    for hhmm in get_check_times():
+        try:
+            hour, minute = hhmm.split(":")
+            scheduler.add_job(
+                run_check, "cron",
+                hour=int(hour), minute=int(minute),
+                misfire_grace_time=3600,   # still run if up to 1h late (e.g. laptop was busy)
+                coalesce=True,             # if several runs were missed, run only once
+                max_instances=1,           # never overlap two checks
+            )
+            valid_times.append(hhmm)
+        except ValueError:
+            print(f"[scheduler] Ignoring invalid time: {hhmm}")
+    
+    if not valid_times:
+        print("[scheduler] No valid CHECK_TIMES set. Not starting.")
+        return
+    
+    print(f"[scheduler] Daily checks at {valid_times} ({TIMEZONE}). Ctrl+C to stop.")
+    
+    # Optional: one immediate check on startup (costs a full cycle of API calls)
+    if os.getenv("RUN_ON_START", "false").lower() == "true":
+        run_check()
+    
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        print("[scheduler] Stopped.")
+#----------------------------------------------------------------------------------------------------------------------------------------

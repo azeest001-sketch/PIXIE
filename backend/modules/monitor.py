@@ -1,52 +1,74 @@
 """
-monitor.py
-----------
-FEATURE: Collector + Alert loop
+MODULE 5: monitor.py
 
-check_tracked_products() pulls tracked rows, asks api_client for the
-current price, compares to target_price, stores a history row, and
-calls notifier.send_price_alert() if the price dropped.
+--> check_tracked_products() pulls tracked products' rows from database.py, 
+calls api_client for the current price, compares it to target_price, 
+stores a history row, and calls notifier.send_price_alert() if the price dropped to target_price.
 
-run_monitoring_loop() is the interval loop (while True + time.sleep).
-scheduler.py is separate — it only decides WHEN to call
-check_tracked_products(), it does not fetch prices itself.
 """
+#----------------------------------------------------------------------------------------------------------------------------------------
+#IMPORTS
 
 import time
-import os
-from dotenv import load_dotenv
-
 from . import database, api_client, notifier
-
-load_dotenv()
-
+#----------------------------------------------------------------------------------------------------------------------------------------
+CALL_GAP = 0.5   # seconds between API calls (Flipkart Rate limit allows 5/sec)
+#----------------------------------------------------------------------------------------------------------------------------------------
 
 def check_tracked_products() -> list[dict]:
-    """
-    Pull all tracked products from database.py, call api_client for the
-    current price, compare to target_price, and alert if it dropped.
-    """
-    # TODO: replace this placeholder pass-through with real fetch + compare
     results = []
     for product in database.get_tracked_products():
-        results.append(
-            {
-                "product_id": product.get("id"),
-                "title": product.get("name") or product.get("title"),
-                "current_price": product.get("price"),
-                "target_price": product.get("target_price"),
-                "dropped": False,
-                "alert": None,
-            }
-        )
-        # database.insert_price_record(...)
-        # if current_price <= target_price: notifier.send_price_alert(...)
+        platform = product.get("platform")
+        external_id = product.get("external_id")
+        target_price = product.get("target_price")
+        
+        result = {
+            "product_id": product.get("id"),
+            "title": product.get("name") or product.get("title"),
+            "current_price": None,
+            "target_price": target_price,
+            "dropped": False,
+            "alert": None,
+        }
+        try:
+            data = api_client.get_product_data(platform, external_id)   # 1 API request
+        except Exception as e:
+            print(f"[monitor] Error fetching {platform}/{external_id}: {e}")
+            data = None
+        
+        if data is None:
+            print(f"[monitor] Skipping {product.get('id')}: fetch failed.")
+            results.append(result)
+            time.sleep(CALL_GAP)
+            continue
+        
+        # Out-of-stock prices can be stale -> don't save or alert on them
+        if data.get("in_stock") is False:
+            print(f"[monitor] {product.get('id')} is out of stock, skipping.")
+            results.append(result)
+            time.sleep(CALL_GAP)
+            continue
+        
+        price = data["price"]
+        result["current_price"] = price
+        
+        # Save the real data point for the price history graph
+        try:
+            database.insert_price_record(product.get("id"), price)
+        except Exception as e:
+            print(f"[monitor] Could not save price for {product.get('id')}: {e}")
+            results.append(result)
+            time.sleep(CALL_GAP)
+            continue
+        
+        # Alert if price reached the user's target
+        if target_price is not None and price <= target_price:
+            result["dropped"] = True
+            result["alert"] = notifier.send_price_alert(product, price)
+        
+        results.append(result)
+        time.sleep(CALL_GAP)
+        
     return results
-
-
-def run_monitoring_loop() -> None:
-    """Runs forever, sleeping POLL_INTERVAL_SECONDS between checks."""
-    interval = int(os.getenv("POLL_INTERVAL_SECONDS", "3600"))
-    while True:
-        check_tracked_products()
-        time.sleep(interval)
+        
+#----------------------------------------------------------------------------------------------------------------------------------------
