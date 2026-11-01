@@ -286,13 +286,3 @@ def search_product(platform, query):
     return []
 
 #----------------------------------------------------------------------------------------------------------------------------------------
-# TEST BLOCK (run: python api_client.py)
-if __name__ == "__main__":
-    import sys
-
-    # Offline: 0 requests
-    fake = {"ok": True, "data": {"product": {
-        "itm_id": "itm3193199adbbec", "title": "Test Phone Online at Best Price On Flipkart.com",
-        "price": 8589, "mrp": 13999, "in_stock": True,
-        "image": "http://x/y.jpeg", "url": "https://www.flipkart.com/p/itm3193199adbbec"}}}
-    print(normalize_response(fake, "flipkart", "itm3193199adbbec"))
