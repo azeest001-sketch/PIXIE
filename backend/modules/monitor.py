@@ -50,6 +50,7 @@ def check_tracked_products() -> list[dict]:
             continue
         
         price = data["price"]
+        previous_price = product.get("price")
         result["current_price"] = price
         
         # Save the real data point for the price history graph
@@ -61,10 +62,12 @@ def check_tracked_products() -> list[dict]:
             time.sleep(CALL_GAP)
             continue
         
-        # Alert if price reached the user's target
-        if target_price is not None and price <= target_price:
+        # Every lower price sends an email. The target discount gets its own message.
+        price_dropped = previous_price is not None and price < float(previous_price)
+        hit_target = target_price is not None and price <= float(target_price)
+        if price_dropped:
             result["dropped"] = True
-            result["alert"] = notifier.send_price_alert(product, price)
+            result["alert"] = notifier.send_price_alert(product, price, reached_target=hit_target)
         
         results.append(result)
         time.sleep(CALL_GAP)

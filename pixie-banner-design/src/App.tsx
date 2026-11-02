@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { getProductHistory, listProducts, trackProduct } from './lib/api';
+import { getProductHistory, listProducts, setProductActive, trackProduct } from './lib/api';
 import { motion } from 'motion/react';
 import { Pixie3DStage } from './components/Pixie3DStage';
 import { ScrollSequence } from './components/ScrollSequence';
@@ -199,6 +199,80 @@ const PRICE_TIMELINE = [
   },
 ] as const;
 
+type ChartPoint = {
+  month: string;
+  price: number;
+  recorded_at?: string;
+  x: number;
+  y: number;
+  type: 'normal' | 'fake' | 'dip' | 'best';
+  verdict: string;
+  detail: string;
+};
+
+type SavedHistoryPoint = {
+  month: string;
+  price: number;
+  recorded_at: string;
+};
+
+// Turn saved price checks into points the chart can draw.
+function buildChartPoints(
+  history: SavedHistoryPoint[],
+  verdict?: string
+): ChartPoint[] {
+  if (history.length === 0) return [];
+
+  const prices = history.map((point) => point.price);
+  const lowest = Math.min(...prices);
+  const highest = Math.max(...prices);
+  const average = prices.reduce((sum, price) => sum + price, 0) / prices.length;
+  const span = highest - lowest || 1;
+  const lastIndex = history.length - 1;
+
+  return history.map((point, index) => {
+    const x = history.length === 1 ? 290 : 40 + (index * 500) / lastIndex;
+    // Higher prices sit higher on the chart, which means a smaller y.
+    const y = 26 + ((highest - point.price) / span) * 106;
+    let type: ChartPoint['type'] = 'normal';
+    let pointVerdict = 'Recorded price';
+    let detail = `Checked on ${point.recorded_at}.`;
+
+    if (point.price === highest && history.length > 1) {
+      type = 'fake';
+      pointVerdict = 'Highest price so far';
+      detail = 'A discount off this high price can look bigger than it really is.';
+    } else if (point.price === lowest) {
+      type = 'best';
+      pointVerdict = 'Lowest price so far';
+      detail = 'This is the lowest price saved for this product.';
+    } else if (point.price < average) {
+      type = 'dip';
+      pointVerdict = 'Below average';
+      detail = 'This check is under the average of the saved prices.';
+    }
+
+    if (index === lastIndex && verdict) {
+      pointVerdict = verdict;
+    }
+
+    return {
+      month: point.month,
+      price: point.price,
+      recorded_at: point.recorded_at,
+      x,
+      y,
+      type,
+      verdict: pointVerdict,
+      detail,
+    };
+  });
+}
+
+function formatMoney(prefix: string, amount: number) {
+  return `${prefix}${Math.round(amount).toLocaleString('en-IN')}`;
+}
+
 export default function App() {
   const overlayTrackRef = useRef<HTMLDivElement>(null);
   const [activeNav, setActiveNav] = useState<string>('Home');
@@ -208,22 +282,36 @@ export default function App() {
 
   // Section 2 interactive states (3-Step How PIXIE Works & Wishlist Autopilot)
   const [activeHowStep, setActiveHowStep] = useState<number>(0);
-  const [quickProduct, setQuickProduct] = useState<string>('Wireless Noise-Canceling Headphones');
+  const [quickProduct, setQuickProduct] = useState<string>('');
   const [selectedDropGoal, setSelectedDropGoal] = useState<number>(25);
-  const [watchlistItems, setWatchlistItems] = useState([
-    { id: 1, name: 'Minimalist Desk Lamp', drop: '-18%', saved: 28, active: true },
-    { id: 2, name: 'Mechanical Keycap Set', drop: '-30%', saved: 45, active: true },
-    { id: 3, name: 'Portable SSD 2TB', drop: '-22%', saved: 52, active: false },
-  ]);
-  const [dealScore, setDealScore] = useState('9.8/10');
+  const [watchlistItems, setWatchlistItems] = useState<
+    { id: number; name: string; drop: string; saved: number; active: boolean }[]
+  >([]);
+  const [dealScore, setDealScore] = useState('—');
+  const [scoreCaption, setScoreCaption] = useState('Waiting for a product');
   const [trackMessage, setTrackMessage] = useState('');
+  const [historyPoints, setHistoryPoints] = useState<ChartPoint[]>([]);
+  const [usingSavedData, setUsingSavedData] = useState(false);
+  const [selectedTimelineIdx, setSelectedTimelineIdx] = useState<number>(5);
+
+  const showSavedHistory = async (productId: number) => {
+    const data = await getProductHistory(productId);
+    const points = buildChartPoints(data.history, data.analytics?.verdict);
+    setHistoryPoints(points);
+    setSelectedTimelineIdx(Math.max(points.length - 1, 0));
+    setUsingSavedData(true);
+    if (data.analytics?.deal_score != null) {
+      setDealScore(`${data.analytics.deal_score}/10`);
+      setScoreCaption(data.analytics.verdict || 'From saved prices');
+    }
+  };
 
   useEffect(() => {
     listProducts()
       .then((data) => {
-        if (!data.products?.length) return;
+        const products = data.products || [];
         setWatchlistItems(
-          data.products.map((item) => ({
+          products.map((item) => ({
             id: item.id,
             name: item.name || item.title || 'Tracked product',
             drop: item.drop || '—',
@@ -231,51 +319,65 @@ export default function App() {
             active: item.active !== false,
           }))
         );
-      })
-      .catch(() => {
-        // Backend stub not running yet — keep local placeholders.
-      });
-
-    getProductHistory(1)
-      .then((data) => {
-        if (data.analytics?.deal_score != null) {
-          setDealScore(`${data.analytics.deal_score}/10`);
+        if (products[0]) {
+          return showSavedHistory(products[0].id);
         }
+        return undefined;
       })
       .catch(() => {
-        // Keep the static chart until analytics.py is implemented.
+        setTrackMessage('Backend is not running. Start it, then paste a product link.');
       });
   }, []);
 
-  const submitTrackedProduct = async (dropGoal = selectedDropGoal) => {
+  const submitTrackedProduct = async (dropGoal = selectedDropGoal, link = quickProduct) => {
+    const url = link.trim();
+    if (!url) {
+      setTrackMessage('Paste an Amazon or Flipkart product link first.');
+      return;
+    }
     try {
-      const result = await trackProduct(quickProduct, dropGoal);
+      const result = await trackProduct(url, dropGoal);
       const stored = result.product;
-      setTrackMessage(`Tracking ${stored.title || stored.name || quickProduct}`);
+      setTrackMessage(`Tracking ${stored.title || stored.name || url}`);
       setWatchlistItems((prev) => [
         {
           id: stored.id,
-          name: stored.title || stored.name || quickProduct,
+          name: stored.title || stored.name || url,
           drop: stored.drop || `-${dropGoal}%`,
           saved: stored.saved || 0,
           active: true,
         },
         ...prev.filter((item) => item.id !== stored.id),
       ]);
-    } catch {
-      setTrackMessage('Backend not running — placeholder saved in the UI only.');
+      await showSavedHistory(stored.id);
+      scrollToSection('section-history', 'Price History');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not track that link.';
+      setTrackMessage(message);
     }
   };
 
   // Section 3 interactive states (Real Price History & Fake Discount Detector)
-  const [selectedTimelineIdx, setSelectedTimelineIdx] = useState<number>(5);
-
   const [activeModal, setActiveModal] = useState<{
     title: string;
     description: string;
   } | null>(null);
 
-  const selectedPoint = PRICE_TIMELINE[selectedTimelineIdx];
+  const timeline = historyPoints.length > 0 ? historyPoints : PRICE_TIMELINE;
+  const selectedPoint = timeline[Math.min(selectedTimelineIdx, timeline.length - 1)];
+  const moneyPrefix = usingSavedData ? '₹' : '$';
+  const averagePrice =
+    timeline.reduce((sum, point) => sum + point.price, 0) / timeline.length;
+  const chartLine = timeline.map((point) => `${point.x},${point.y}`).join(' ');
+  const chartArea = `M ${timeline[0].x} ${timeline[0].y} ${timeline
+    .slice(1)
+    .map((point) => `L ${point.x} ${point.y}`)
+    .join(' ')} L ${timeline[timeline.length - 1].x} 155 L ${timeline[0].x} 155 Z`;
+  const highestPrice = Math.max(...timeline.map((point) => point.price));
+  const lowestPrice = Math.min(...timeline.map((point) => point.price));
+  const averageLineY = usingSavedData
+    ? 26 + ((highestPrice - averagePrice) / (highestPrice - lowestPrice || 1)) * 106
+    : 78;
 
   const scrollToSection = (targetId: string, navLabel?: string) => {
     if (navLabel) {
@@ -288,11 +390,17 @@ export default function App() {
   };
 
   const toggleWatchlistItem = (id: number) => {
+    const current = watchlistItems.find((item) => item.id === id);
+    if (!current) return;
+    const nextActive = !current.active;
     setWatchlistItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, active: !item.active } : item
-      )
+      prev.map((item) => (item.id === id ? { ...item, active: nextActive } : item))
     );
+    if (usingSavedData) {
+      void setProductActive(id, nextActive).catch(() => {
+        setTrackMessage('Could not update that watchlist item.');
+      });
+    }
   };
 
   const totalWatchlistSavings = watchlistItems
@@ -370,6 +478,17 @@ export default function App() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && searchQuery.trim()) {
+                      const link = searchQuery.trim();
+                      setQuickProduct(link);
+                      setSearchOpen(false);
+                      setSearchQuery('');
+                      setActiveHowStep(2);
+                      scrollToSection('section-track', 'How It Works');
+                      void submitTrackedProduct(selectedDropGoal, link);
+                    }
+                  }}
                   placeholder="Paste product link..."
                   autoFocus
                   className="bg-transparent text-white text-xs placeholder:text-white/50 focus:outline-none w-32 sm:w-40"
@@ -399,8 +518,6 @@ export default function App() {
 
             <a
               href="http://localhost:3001"
-              target="_blank"
-              rel="noopener noreferrer"
               className="bg-white text-black rounded-full px-5 py-2.5 text-[13.5px] font-semibold inline-flex items-center gap-2 hover:bg-white/90 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <span>Get Started</span>
@@ -690,17 +807,28 @@ export default function App() {
                           type="text"
                           value={quickProduct}
                           onChange={(e) => setQuickProduct(e.target.value)}
-                          aria-label="Product name or link"
-                          className="bg-transparent text-xs text-white w-full focus:outline-none"
+                          placeholder="Paste an Amazon or Flipkart link"
+                          aria-label="Product link"
+                          className="bg-transparent text-xs text-white w-full focus:outline-none placeholder:text-white/40"
                         />
                         <button
                           type="button"
-                          onClick={() => setActiveHowStep(1)}
+                          onClick={() => {
+                            if (!quickProduct.trim()) {
+                              setTrackMessage('Paste an Amazon or Flipkart product link first.');
+                              return;
+                            }
+                            setTrackMessage('');
+                            setActiveHowStep(1);
+                          }}
                           className="px-3 py-1 rounded-lg bg-white text-black text-xs font-semibold hover:bg-white/90 transition-colors cursor-pointer shrink-0"
                         >
                           Next →
                         </button>
                       </div>
+                      {trackMessage && (
+                        <p className="text-[11px] text-white/70 mt-2">{trackMessage}</p>
+                      )}
                     </div>
                   )}
 
@@ -778,11 +906,20 @@ export default function App() {
                   </div>
 
                   <div className="space-y-2.5 my-2">
+                    {watchlistItems.length === 0 && (
+                      <div className="rounded-xl px-3.5 py-3 border border-white/10 text-xs text-white/60">
+                        No products yet. Paste a product link to start tracking.
+                      </div>
+                    )}
                     {watchlistItems.map((item) => (
                       <button
                         key={item.id}
                         type="button"
-                        onClick={() => toggleWatchlistItem(item.id)}
+                        onClick={() => {
+                          void showSavedHistory(item.id).catch(() => {
+                            setTrackMessage('Could not load price history.');
+                          });
+                        }}
                         className={`w-full rounded-xl px-3.5 py-2.5 border flex items-center justify-between text-xs transition-all cursor-pointer ${
                           item.active
                             ? 'bg-white/[0.14] border-white/30 text-white'
@@ -791,6 +928,12 @@ export default function App() {
                       >
                         <div className="flex items-center gap-2.5 truncate">
                           <span
+                            role="checkbox"
+                            aria-checked={item.active}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleWatchlistItem(item.id);
+                            }}
                             className={`w-4 h-4 rounded-md flex items-center justify-center border shrink-0 ${
                               item.active
                                 ? 'bg-white text-black border-white'
@@ -833,7 +976,7 @@ export default function App() {
                   </div>
                   <div className="text-right shrink-0">
                     <div className="text-base font-bold text-white tabular-nums">
-                      ${totalWatchlistSavings}
+                      {formatMoney(moneyPrefix, totalWatchlistSavings)}
                     </div>
                     <div className="text-[10px] text-white/65">Saved</div>
                   </div>
@@ -908,7 +1051,7 @@ export default function App() {
 
                   <div className="rounded-full bg-white/[0.12] border border-white/25 backdrop-blur-md px-4 py-1.5 text-xs text-white flex items-center gap-2 tabular-nums">
                     <span className="text-white/70">{selectedPoint.month}:</span>
-                    <span className="font-bold">${selectedPoint.price}</span>
+                    <span className="font-bold">{formatMoney(moneyPrefix, selectedPoint.price)}</span>
                     <span className="text-white/40">·</span>
                     <span className="font-medium text-white/90">
                       {selectedPoint.verdict}
@@ -934,9 +1077,9 @@ export default function App() {
                     {/* Horizontal Reference Line: 6-Month Average ($240) */}
                     <line
                       x1="20"
-                      y1="78"
+                      y1={averageLineY}
                       x2="560"
-                      y2="78"
+                      y2={averageLineY}
                       stroke="rgba(255,255,255,0.2)"
                       strokeDasharray="4 4"
                       strokeWidth="1"
@@ -947,31 +1090,25 @@ export default function App() {
                       fill="rgba(255,255,255,0.45)"
                       fontSize="10"
                     >
-                      Typical Avg $240
+                      {usingSavedData ? `Avg ${formatMoney(moneyPrefix, averagePrice)}` : 'Typical Avg $240'}
                     </text>
 
-                    {/* Shaded Area under Price Curve */}
-                    <path
-                      d="M 40 78 L 140 26 L 240 82 L 340 100 L 440 88 L 540 132 L 540 155 L 40 155 Z"
-                      fill="url(#priceAreaGrad)"
-                    />
+                    <path d={chartArea} fill="url(#priceAreaGrad)" />
 
-                    {/* Main Price History Polyline */}
                     <polyline
                       fill="none"
                       stroke="rgba(255,255,255,0.85)"
                       strokeWidth="2.5"
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      points="40,78 140,26 240,82 340,100 440,88 540,132"
+                      points={chartLine}
                     />
 
-                    {/* Interactive Data Nodes */}
-                    {PRICE_TIMELINE.map((pt, idx) => {
+                    {timeline.map((pt, idx) => {
                       const isSelected = idx === selectedTimelineIdx;
                       return (
                         <g
-                          key={pt.month}
+                          key={pt.recorded_at || `${pt.month}-${idx}`}
                           className="cursor-pointer"
                           onClick={() => setSelectedTimelineIdx(idx)}
                         >
@@ -1003,7 +1140,7 @@ export default function App() {
                             fontSize="11"
                             fontWeight={isSelected ? '700' : '500'}
                           >
-                            ${pt.price}
+                            {formatMoney(moneyPrefix, pt.price)}
                           </text>
                         </g>
                       );
@@ -1011,15 +1148,15 @@ export default function App() {
                   </svg>
 
                   {/* Month Selector Buttons under Chart */}
-                  <div className="grid grid-cols-6 gap-2 pt-2 border-t border-white/10">
-                    {PRICE_TIMELINE.map((pt, idx) => {
+                  <div className="flex flex-wrap gap-2 pt-2 border-t border-white/10">
+                    {timeline.map((pt, idx) => {
                       const isSelected = idx === selectedTimelineIdx;
                       return (
                         <button
-                          key={pt.month}
+                          key={pt.recorded_at || `${pt.month}-${idx}`}
                           type="button"
                           onClick={() => setSelectedTimelineIdx(idx)}
-                          className={`py-1.5 rounded-lg text-xs tabular-nums transition-colors cursor-pointer ${
+                          className={`px-3 py-1.5 rounded-lg text-xs tabular-nums transition-colors cursor-pointer ${
                             isSelected
                               ? 'bg-white text-black font-semibold'
                               : 'text-white/65 hover:text-white hover:bg-white/[0.06]'
@@ -1064,7 +1201,7 @@ export default function App() {
                   <div className="text-base font-bold text-white tabular-nums">
                     {dealScore}
                   </div>
-                  <div className="text-[11px] text-white/65">All-Time Low</div>
+                  <div className="text-[11px] text-white/65">{scoreCaption}</div>
                 </div>
               </div>
 
@@ -1195,8 +1332,6 @@ export default function App() {
             {/* Centered Get Started Button */}
             <motion.a
               href="http://localhost:3001"
-              target="_blank"
-              rel="noopener noreferrer"
               initial={{ opacity: 0, scale: 0.94 }}
               whileInView={{ opacity: 1, scale: 1 }}
               viewport={{ once: false, amount: 0.4 }}
