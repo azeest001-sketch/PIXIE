@@ -6,7 +6,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
   if (!res.ok) {
-    throw new Error(`PIXIE API ${res.status}`);
+    const body = await res.json().catch(() => null);
+    const detail = body && typeof body.detail === 'string' ? body.detail : '';
+    throw new Error(detail || `PIXIE API ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -53,4 +55,11 @@ export function getProductHistory(productId: number) {
 
 export function checkNow() {
   return request<{ results: unknown[] }>('/api/check-now', { method: 'POST' });
+}
+
+export function setProductActive(productId: number, active: boolean) {
+  return request<{ id: number; active: boolean }>(`/api/products/${productId}/active`, {
+    method: 'POST',
+    body: JSON.stringify({ active }),
+  });
 }
