@@ -21,7 +21,7 @@ TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Kolkata")
 
 def get_check_times() -> list[str]:
     # Default: 2 checks/day (fits the Amazon 100 requests/month plan)
-    raw = os.getenv("CHECK_TIMES", "09:00,21:00")
+    raw = os.getenv("CHECK_TIMES", "09:30,21:30")
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 #----------------------------------------------------------------------------------------------------------------------------------------
