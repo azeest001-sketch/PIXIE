@@ -24,7 +24,10 @@ export type TrackedProduct = {
   saved?: number;
   platform?: string;
   image_url?: string;
+  url?: string;
   pair_id?: string | null;
+  price_available?: boolean;
+  checked_at?: string | null;
 };
 
 export function trackProduct(url: string, dropGoalPercent: number) {
@@ -45,17 +48,25 @@ export function listProducts() {
   return request<{ products: TrackedProduct[] }>('/api/products');
 }
 
-export type PricePoint = { month: string; price: number; recorded_at?: string };
+export type PricePoint = {
+  month: string;
+  price: number | null;
+  recorded_at?: string;
+  available?: boolean;
+};
 
 export type StoreComparison = {
   found: boolean;
   note?: string;
   history?: PricePoint[];
+  other?: TrackedProduct;
 };
 
 export function getProductHistory(productId: number) {
   return request<{
     platform?: string;
+    price_available?: boolean;
+    checked_at?: string | null;
     history: PricePoint[];
     analytics: {
       deal_score: number;
@@ -75,9 +86,14 @@ export function setDropGoal(productId: number, dropGoalPercent: number) {
   });
 }
 
-export function connectEmail() {
+export function getAlertEmail() {
+  return request<{ email: string }>('/api/alerts/email');
+}
+
+export function connectEmail(email: string) {
   return request<{ sent: boolean; message: string }>('/api/alerts/connect', {
     method: 'POST',
+    body: JSON.stringify({ email }),
   });
 }
 

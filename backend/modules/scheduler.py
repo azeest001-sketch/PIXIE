@@ -9,6 +9,7 @@ MODULE 6: scheduler.py
 import os
 from dotenv import load_dotenv
 
+from . import database
 from .monitor import check_tracked_products
 #----------------------------------------------------------------------------------------------------------------------------------------
 
@@ -65,6 +66,7 @@ def start_scheduler() -> None:
         print("[scheduler] No valid CHECK_TIMES set. Not starting.")
         return
     
+    database.create_tables()
     print(f"[scheduler] Daily checks at {valid_times} ({TIMEZONE}). Ctrl+C to stop.")
     
     # Optional: one immediate check on startup (costs a full cycle of API calls)

@@ -66,6 +66,15 @@ def create_tables() -> None:
             )
             """
         )
+        history_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(price_history)")
+        }
+        if "available" not in history_columns:
+            # 0 means this check found the product but no selling price.
+            connection.execute(
+                "ALTER TABLE price_history ADD COLUMN available INTEGER NOT NULL DEFAULT 1"
+            )
         columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(products)")
@@ -88,6 +97,29 @@ def create_tables() -> None:
         if "image_url" not in columns:
             # The store photo. The API sends this with the product.
             connection.execute("ALTER TABLE products ADD COLUMN image_url TEXT")
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(products)")
+        }
+        if "price_available" not in columns:
+            # 0 means the last check found the product but no selling price.
+            connection.execute(
+                "ALTER TABLE products ADD COLUMN price_available INTEGER NOT NULL DEFAULT 1"
+            )
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(products)")
+        }
+        if "checked_at" not in columns:
+            connection.execute("ALTER TABLE products ADD COLUMN checked_at TEXT")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
         # Older rows only stored the target price. Fill the percent from that target
         # and the first price saved when the product was tracked.
         for row in connection.execute(
@@ -122,7 +154,7 @@ def latest_price(connection: sqlite3.Connection, product_id: int) -> float | Non
     row = connection.execute(
         """
         SELECT price FROM price_history
-        WHERE product_id = ?
+        WHERE product_id = ? AND COALESCE(available, 1) = 1
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
         """,
@@ -137,7 +169,7 @@ def first_price(connection: sqlite3.Connection, product_id: int) -> float | None
     row = connection.execute(
         """
         SELECT price FROM price_history
-        WHERE product_id = ?
+        WHERE product_id = ? AND COALESCE(available, 1) = 1
         ORDER BY recorded_at ASC, id ASC
         LIMIT 1
         """,
@@ -148,13 +180,37 @@ def first_price(connection: sqlite3.Connection, product_id: int) -> float | None
     return float(row["price"])
 
 
+def latest_recorded_at(connection: sqlite3.Connection, product_id: int) -> str | None:
+    """When the newest saved price was written."""
+    row = connection.execute(
+        """
+        SELECT recorded_at FROM price_history
+        WHERE product_id = ?
+        ORDER BY recorded_at DESC, id DESC
+        LIMIT 1
+        """,
+        (product_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["recorded_at"]
+
+
 def as_product(connection: sqlite3.Connection, row: sqlite3.Row) -> dict:
     """Turn one database row into the dictionary the UI already expects."""
-    price = latest_price(connection, row["id"])
-    if price is None:
-        price = 0
-    list_price = float(row["mrp"]) if row["mrp"] else (first_price(connection, row["id"]) or price)
-    drop, saved = drop_saved(list_price, price)
+    keys = row.keys()
+    available = True if "price_available" not in keys or row["price_available"] is None else bool(row["price_available"])
+    checked_at = row["checked_at"] if "checked_at" in keys else None
+    if not checked_at:
+        checked_at = latest_recorded_at(connection, row["id"])
+    numeric_price = latest_price(connection, row["id"])
+    if not available:
+        price = None
+        drop, saved = "—", 0
+    else:
+        price = numeric_price if numeric_price is not None else 0
+        list_price = float(row["mrp"]) if row["mrp"] else (first_price(connection, row["id"]) or price)
+        drop, saved = drop_saved(list_price, price)
     return {
         "id": row["id"],
         "title": row["title"],
@@ -165,13 +221,16 @@ def as_product(connection: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "target_price": row["target_price"],
         "drop_goal_percent": row["drop_goal_percent"],
         "price": price,
+        "last_price": numeric_price,
+        "price_available": available,
+        "checked_at": checked_at,
         "mrp": row["mrp"],
         "drop": drop,
         "saved": saved,
         "active": bool(row["active"]),
         "first_seen": row["first_seen"],
-        "pair_id": row["pair_id"] if "pair_id" in row.keys() else None,
-        "image_url": row["image_url"] if "image_url" in row.keys() else "",
+        "pair_id": row["pair_id"] if "pair_id" in keys else None,
+        "image_url": row["image_url"] if "image_url" in keys else "",
     }
 
 
@@ -232,10 +291,18 @@ def insert_price_record(product_id: int, price: float) -> dict:
     with connect() as connection:
         connection.execute(
             """
-            INSERT INTO price_history (product_id, price, recorded_at)
-            VALUES (?, ?, ?)
+            INSERT INTO price_history (product_id, price, recorded_at, available)
+            VALUES (?, ?, ?, 1)
             """,
             (product_id, price, recorded_at),
+        )
+        connection.execute(
+            """
+            UPDATE products
+            SET price_available = 1, checked_at = ?
+            WHERE id = ?
+            """,
+            (recorded_at, product_id),
         )
     return {
         "product_id": product_id,
@@ -260,7 +327,7 @@ def get_price_history(product_id: int) -> list[dict]:
     with connect() as connection:
         rows = connection.execute(
             """
-            SELECT price, recorded_at FROM price_history
+            SELECT price, recorded_at, available FROM price_history
             WHERE product_id = ?
             ORDER BY recorded_at ASC, id ASC
             """,
@@ -271,10 +338,12 @@ def get_price_history(product_id: int) -> list[dict]:
     last_index = len(rows) - 1
     for index, row in enumerate(rows):
         recorded_at = row["recorded_at"]
+        available = bool(row["available"]) if row["available"] is not None else True
         history.append(
             {
                 "month": month_label(recorded_at, index == last_index),
-                "price": row["price"],
+                "price": None if not available else row["price"],
+                "available": available,
                 "recorded_at": recorded_at,
             }
         )
@@ -360,6 +429,57 @@ def set_drop_goal(product_id: int, drop_goal_percent: float) -> dict | None:
             (product_id,),
         ).fetchone()
         return as_product(connection, row)
+
+
+def mark_price_unavailable(product_id: int) -> str:
+    """Remember that this check found the product with no selling price.
+
+    The history row keeps the day on the graph. Its price is not a real
+    selling price and is left out of later price reads.
+    """
+    checked_at = datetime.now().isoformat(timespec="seconds")
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO price_history (product_id, price, recorded_at, available)
+            VALUES (?, 0, ?, 0)
+            """,
+            (product_id, checked_at),
+        )
+        connection.execute(
+            """
+            UPDATE products
+            SET price_available = 0, checked_at = ?
+            WHERE id = ?
+            """,
+            (checked_at, product_id),
+        )
+    return checked_at
+
+
+def get_setting(key: str) -> str:
+    """Read one saved setting, such as the alert email typed on the page."""
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (key,),
+        ).fetchone()
+    if row is None:
+        return ""
+    return row["value"]
+
+
+def set_setting(key: str, value: str) -> None:
+    """Save one setting. A later save replaces the previous value."""
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
 
 
 def set_product_active(product_id: int, active: bool) -> None:

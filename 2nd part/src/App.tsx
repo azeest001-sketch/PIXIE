@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   ArrowRight,
@@ -15,7 +15,7 @@ import {
   LineChart,
   Tag,
 } from 'lucide-react';
-import { connectEmail, deleteProduct, getProductHistory, listProducts, setDropGoal, trackProduct, type TrackedProduct } from './lib/api';
+import { connectEmail, deleteProduct, getAlertEmail, getProductHistory, listProducts, setDropGoal, trackProduct, type TrackedProduct } from './lib/api';
 
 function ScrollRevealWords({
   text,
@@ -111,7 +111,26 @@ const WEEKLY_BARS = [
   { day: 'Sun', val: 34, price: '$168' },
 ] as const;
 
-type GraphNode = { label: string; price: number; x: number; y: number };
+type GraphNode = {
+  label: string;
+  price: number | null;
+  x: number;
+  y: number;
+  available: boolean;
+};
+
+function formatWhen(value?: string | null) {
+  if (!value) return '';
+  const when = new Date(value);
+  if (Number.isNaN(when.getTime())) return value;
+  return when.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
 
 function wishlistGroups(products: TrackedProduct[]) {
   const seen = new Set<string>();
@@ -129,26 +148,69 @@ function wishlistGroups(products: TrackedProduct[]) {
   return groups;
 }
 
+const POINT_GAP = 148;
+const POINT_PAD = 88;
+
 function toGraphNodes(
-  history: { month: string; price: number }[],
+  history: { month: string; price: number | null; recorded_at?: string; available?: boolean }[],
   scale?: { lowest: number; highest: number },
 ): GraphNode[] {
-  const recent = history.slice(-7);
-  if (recent.length === 0) {
-    return DROP_NODES.map((node) => ({ ...node }));
+  if (history.length === 0) {
+    return DROP_NODES.map((node) => ({ ...node, available: true }));
   }
-  const prices = recent.map((point) => point.price);
+  const priced = history.filter((point) => point.available !== false && point.price != null);
+  const prices = priced.map((point) => point.price as number);
   // Both store lines share one high and low, so a cheaper price sits lower.
-  const lowest = scale?.lowest ?? Math.min(...prices);
-  const highest = scale?.highest ?? Math.max(...prices);
+  const lowest = scale?.lowest ?? (prices.length ? Math.min(...prices) : 0);
+  const highest = scale?.highest ?? (prices.length ? Math.max(...prices) : 1);
   const span = highest - lowest || 1;
-  const lastIndex = recent.length - 1;
-  return recent.map((point, index) => ({
-    label: point.month,
-    price: Math.round(point.price),
-    x: recent.length === 1 ? 285 : 30 + (index * 510) / lastIndex,
-    y: 28 + ((highest - point.price) / span) * 108,
-  }));
+  const lastIndex = history.length - 1;
+  const nodes = history.map((point, index) => {
+    const available = point.available !== false && point.price != null;
+    return {
+      label: point.recorded_at ? formatWhen(point.recorded_at) : point.month,
+      price: available ? Math.round((point.price as number) * 100) / 100 : null,
+      available,
+      x: history.length === 1 ? 290 : POINT_PAD + index * POINT_GAP,
+      y: available ? 28 + ((highest - (point.price as number)) / span) * 108 : 0,
+    };
+  });
+  return nodes.map((node, index) => {
+    if (node.available) return node;
+    let nearest: GraphNode | undefined;
+    for (let step = 1; step < nodes.length; step += 1) {
+      const before = nodes[index - step];
+      const after = nodes[index + step];
+      if (before?.available) {
+        nearest = before;
+        break;
+      }
+      if (after?.available) {
+        nearest = after;
+        break;
+      }
+    }
+    const lineY = nearest ? nearest.y : 120;
+    return { ...node, y: Math.min(lineY + 16, 150) };
+  });
+}
+
+function lineSegments(nodes: GraphNode[], xOffset = 0) {
+  const segments: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    if (current.length > 1) segments.push(current.join(' '));
+    current = [];
+  };
+  nodes.forEach((node) => {
+    if (!node.available) {
+      flush();
+      return;
+    }
+    current.push(`${node.x + xOffset},${node.y}`);
+  });
+  flush();
+  return segments;
 }
 
 export default function App() {
@@ -171,23 +233,50 @@ export default function App() {
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [emailNotice, setEmailNotice] = useState('');
   const [emailConnecting, setEmailConnecting] = useState(false);
+  const [alertEmail, setAlertEmail] = useState('');
+  const [savedAlertEmail, setSavedAlertEmail] = useState('');
+  const [priceNotes, setPriceNotes] = useState<string[]>([]);
+  const graphScrollRef = useRef<HTMLDivElement>(null);
 
   const activeNode = graphNodes[Math.min(selectedGraphNodeIdx, Math.max(graphNodes.length - 1, 0))];
-  const scaleNodes = otherNodes.length > 0 ? [...graphNodes, ...otherNodes] : graphNodes;
-  const highestPrice = Math.max(...scaleNodes.map((node) => node.price));
-  const lowestPrice = Math.min(...scaleNodes.map((node) => node.price));
+  const scaleNodes = (otherNodes.length > 0 ? [...graphNodes, ...otherNodes] : graphNodes).filter(
+    (node) => node.available && node.price != null,
+  );
+  const highestPrice = scaleNodes.length ? Math.max(...scaleNodes.map((node) => node.price as number)) : 0;
+  const lowestPrice = scaleNodes.length ? Math.min(...scaleNodes.map((node) => node.price as number)) : 0;
   const priceSpan = highestPrice - lowestPrice || 1;
   const targetLineY = usingLivePrices
     ? Math.min(140, Math.max(24, 28 + ((highestPrice - targetPrice) / priceSpan) * 108))
     : 100;
-  const curvePoints = graphNodes.map((node) => `${node.x},${node.y}`).join(' ');
-  const otherCurve = otherNodes.map((node) => `${node.x + 22},${node.y}`).join(' ');
-  const areaPoints = `${curvePoints} ${graphNodes[graphNodes.length - 1].x},150 ${graphNodes[0].x},150`;
+  const chartWidth = Math.max(
+    580,
+    ...graphNodes.map((node) => node.x + 96),
+    ...otherNodes.map((node) => node.x + 118),
+  );
+  const curveSegments = lineSegments(graphNodes);
+  const otherSegments = lineSegments(otherNodes, 22);
+  const areaSegments = curveSegments.map((segment) => {
+    const pairs = segment.split(' ');
+    const firstX = pairs[0].split(',')[0];
+    const lastX = pairs[pairs.length - 1].split(',')[0];
+    return `${segment} ${lastX},150 ${firstX},150`;
+  });
+  const formatAmount = (amount: number) => {
+    const value = Math.round(Number(amount) * 100) / 100;
+    const hasPaise = Math.abs(value - Math.round(value)) >= 0.01;
+    return value.toLocaleString('en-IN', {
+      minimumFractionDigits: hasPaise ? 2 : 0,
+      maximumFractionDigits: hasPaise ? 2 : 0,
+    });
+  };
   const money = (amount: number) =>
-    `${usingLivePrices ? '₹' : '$'}${Math.round(amount).toLocaleString('en-IN')}`;
+    `${usingLivePrices ? '₹' : '$'}${formatAmount(amount)}`;
   const rupee = (amount?: number | null) =>
-    amount == null ? '—' : `₹${Math.round(Number(amount)).toLocaleString('en-IN')}`;
+    amount == null ? '—' : `₹${formatAmount(amount)}`;
   const selectedProduct = trackedProducts.find((product) => product.id === selectedProductId);
+  const emailIsConnected =
+    savedAlertEmail !== '' &&
+    alertEmail.trim().toLowerCase() === savedAlertEmail.trim().toLowerCase();
 
   const showProduct = async (productId: number, nextTarget?: number, platform?: string) => {
     const data = await getProductHistory(productId);
@@ -197,20 +286,47 @@ export default function App() {
     // opened row is the Flipkart one.
     const amazonHistory = selectedPlatform === 'flipkart' ? partnerHistory : data.history;
     const flipkartHistory = selectedPlatform === 'flipkart' ? data.history : partnerHistory;
-    const prices = [...amazonHistory, ...flipkartHistory].map((point) => point.price);
+    const prices = [...amazonHistory, ...flipkartHistory]
+      .filter((point) => point.available !== false && point.price != null)
+      .map((point) => point.price as number);
     const scale = prices.length
       ? { lowest: Math.min(...prices), highest: Math.max(...prices) }
       : undefined;
-    const nodes = amazonHistory.length
-      ? toGraphNodes(amazonHistory, scale)
-      : toGraphNodes(flipkartHistory, flipkartHistory.length ? scale : undefined);
-    setGraphNodes(nodes);
-    setOtherNodes(
-      amazonHistory.length && flipkartHistory.length ? toGraphNodes(flipkartHistory, scale) : [],
-    );
+    // Gold is the Amazon line. Purple is the Flipkart line.
+    // A Flipkart-only product stays purple instead of borrowing the gold line.
+    const amazonNodes = amazonHistory.length ? toGraphNodes(amazonHistory, scale) : [];
+    const flipkartNodes = flipkartHistory.length ? toGraphNodes(flipkartHistory, scale) : [];
+    const hasLivePrices = amazonNodes.length > 0 || flipkartNodes.length > 0;
+    if (!hasLivePrices) {
+      setGraphNodes(toGraphNodes([]));
+      setOtherNodes([]);
+    } else {
+      setGraphNodes(amazonNodes);
+      setOtherNodes(flipkartNodes);
+    }
     setComparisonNote(data.comparison?.note || '');
-    setSelectedGraphNodeIdx(Math.max(nodes.length - 1, 0));
-    setUsingLivePrices(data.history.length > 0);
+    const notes: string[] = [];
+    const mention = (store: string, available?: boolean, checkedAt?: string | null) => {
+      if (available === false) {
+        const when = formatWhen(checkedAt);
+        notes.push(`${store}: Price is not available${when ? ` · ${when}` : ''}`);
+      }
+    };
+    if (selectedPlatform === 'flipkart') {
+      mention('Flipkart', data.price_available, data.checked_at);
+      if (data.comparison?.found) {
+        mention('Amazon', data.comparison.other?.price_available, data.comparison.other?.checked_at);
+      }
+    } else {
+      mention('Amazon', data.price_available, data.checked_at);
+      if (data.comparison?.found) {
+        mention('Flipkart', data.comparison.other?.price_available, data.comparison.other?.checked_at);
+      }
+    }
+    setPriceNotes(notes);
+    const axis = amazonNodes.length ? amazonNodes : flipkartNodes;
+    setSelectedGraphNodeIdx(Math.max((hasLivePrices ? axis.length : 1) - 1, 0));
+    setUsingLivePrices(hasLivePrices);
     if (nextTarget != null) {
       setTargetPrice(nextTarget);
     }
@@ -230,14 +346,17 @@ export default function App() {
   };
 
   const connectMailbox = async () => {
+    const email = alertEmail.trim();
+    if (!email) {
+      setEmailNotice('Enter your email address.');
+      return;
+    }
     setEmailConnecting(true);
     try {
-      const result = await connectEmail();
-      setEmailNotice(
-        result.sent
-          ? 'Email has been successfully connected from PIXIE.'
-          : result.message,
-      );
+      const result = await connectEmail(email);
+      setSavedAlertEmail(email);
+      setAlertEmail(email);
+      setEmailNotice(result.sent ? '' : result.message);
     } catch (error) {
       setEmailNotice(error instanceof Error ? error.message : 'Could not connect email.');
     } finally {
@@ -264,6 +383,7 @@ export default function App() {
       setGraphNodes(toGraphNodes([]));
       setOtherNodes([]);
       setComparisonNote('');
+      setPriceNotes([]);
       setSavedAmount(0);
       setDealScore('—');
       setVerdict('Waiting for a tracked product');
@@ -276,6 +396,18 @@ export default function App() {
   };
 
   useEffect(() => {
+    const graph = graphScrollRef.current;
+    if (graph) graph.scrollLeft = graph.scrollWidth;
+  }, [selectedProductId, graphNodes.length, otherNodes.length]);
+
+  useEffect(() => {
+    getAlertEmail()
+      .then((data) => {
+        const email = (data.email || '').trim();
+        setAlertEmail(email);
+        setSavedAlertEmail(email);
+      })
+      .catch(() => {});
     listProducts()
       .then(async (data) => {
         const products = data.products || [];
@@ -416,14 +548,39 @@ export default function App() {
                         ) : null}
                         <div className="min-w-0">
                         <div className="font-medium truncate">{name}</div>
-                        {group.members.map((item) => (
-                          <div
-                            key={item.id}
-                            className={`mt-1 truncate tabular-nums ${selected ? 'text-black/70' : 'text-white/65'}`}
-                          >
-                            {(item.platform || 'store')} · {item.price ? rupee(item.price) : '—'}
-                          </div>
-                        ))}
+                        {group.members.map((item) => {
+                          const flipkart = item.platform === 'flipkart';
+                          const ink = flipkart
+                            ? selected
+                              ? '#a21caf'
+                              : '#E879F9'
+                            : selected
+                              ? '#8a6230'
+                              : '#EFCF92';
+                          return (
+                            <div
+                              key={item.id}
+                              className="mt-1 flex items-center gap-1.5 truncate tabular-nums"
+                              style={{ color: ink }}
+                            >
+                              <span
+                                className={`inline-block shrink-0 rounded-full ${
+                                  flipkart ? 'h-0.5 w-4' : 'h-1.5 w-4'
+                                }`}
+                                style={{ backgroundColor: flipkart ? '#E879F9' : '#EFCF92' }}
+                              />
+                              <span className="truncate">
+                                {flipkart ? 'Flipkart' : 'Amazon'}
+                                {' · '}
+                                {item.price_available === false
+                                  ? 'Price is not available'
+                                  : item.price == null
+                                    ? '—'
+                                    : rupee(item.price)}
+                              </span>
+                            </div>
+                          );
+                        })}
                         <div className={`mt-0.5 truncate tabular-nums ${selected ? 'text-black/80' : 'text-white/85'}`}>
                           Target{' '}
                           {product.drop_goal_percent != null
@@ -433,6 +590,31 @@ export default function App() {
                         </div>
                         </div>
                       </button>
+                      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                        {group.members.map((item) =>
+                          item.url ? (
+                            <a
+                              key={`link-${item.id}`}
+                              href={item.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[11px] underline"
+                              style={{
+                                color:
+                                  item.platform === 'flipkart'
+                                    ? selected
+                                      ? '#a21caf'
+                                      : '#E879F9'
+                                    : selected
+                                      ? '#8a6230'
+                                      : '#EFCF92',
+                              }}
+                            >
+                              {item.platform === 'flipkart' ? 'Flipkart' : 'Amazon'}
+                            </a>
+                          ) : null,
+                        )}
+                      </div>
                       {asking ? (
                         <div className="mt-2 flex items-center justify-between gap-2">
                           <span className={selected ? 'text-black/80' : 'text-white/80'}>
@@ -610,7 +792,9 @@ export default function App() {
               {comparisonNote && (
                 <p className="mt-1 text-sm text-white/75">{comparisonNote}</p>
               )}
-              <p className="mt-1 text-sm font-semibold text-white/90">{verdict}</p>
+              {verdict && verdict !== 'Keep watching' && (
+                <p className="mt-1 text-sm font-semibold text-white/90">{verdict}</p>
+              )}
             </div>
           </div>
 
@@ -672,19 +856,23 @@ export default function App() {
                         Flipkart
                       </span>
                     </div>
+                    {priceNotes.map((note) => (
+                      <p key={note} className="mt-1 text-xs text-white/85">
+                        {note}
+                      </p>
+                    ))}
                   </div>
-                </div>
-
-                <div className="rounded-full bg-white text-black px-3.5 py-1 text-xs font-semibold tabular-nums">
-                  {activeNode.label}: {money(activeNode.price)}
                 </div>
               </div>
 
               {/* SVG Price Drop Line Chart */}
               <div className="rounded-2xl bg-white/[0.04] border border-white/12 p-4">
+                <div ref={graphScrollRef} className="product-scroll overflow-x-auto overflow-y-hidden">
                 <svg
-                  viewBox="0 0 580 155"
-                  className="w-full h-36 overflow-visible"
+                  viewBox={`0 0 ${chartWidth} 168`}
+                  width={chartWidth}
+                  height={148}
+                  className="block max-w-none"
                   role="img"
                   aria-label="Price drop detection graph"
                 >
@@ -695,52 +883,73 @@ export default function App() {
                     </linearGradient>
                   </defs>
 
-                  {/* Target Threshold Dashed Line */}
-                  <line
-                    x1="20"
-                    y1={targetLineY}
-                    x2="560"
-                    y2={targetLineY}
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="5 5"
-                    strokeWidth="1.2"
-                  />
                   <text
                     x="26"
-                    y={Math.max(targetLineY - 8, 16)}
-                    fill="rgba(255,255,255,0.65)"
-                    fontSize="10"
+                    y="14"
+                    fill="rgba(255,255,255,0.75)"
+                    fontSize="11"
                     fontWeight="600"
                   >
                     Target {money(targetPrice)}
                   </text>
 
-                  <polygon points={areaPoints} fill="url(#topDropGrad)" />
-
-                  <polyline
-                    fill="none"
-                    stroke="#EFCF92"
-                    strokeWidth="8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    points={curvePoints}
+                  {/* Target Threshold Dashed Line */}
+                  <line
+                    x1="20"
+                    y1={targetLineY}
+                    x2={chartWidth - 20}
+                    y2={targetLineY}
+                    stroke="rgba(255,255,255,0.35)"
+                    strokeDasharray="5 5"
+                    strokeWidth="1.2"
                   />
+                  {areaSegments.map((points) => (
+                    <polygon key={points} points={points} fill="url(#topDropGrad)" />
+                  ))}
 
-                  {otherNodes.length > 0 && (
-                    <g>
-                      <polyline
-                        fill="none"
-                        stroke="#E879F9"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        points={otherCurve}
-                      />
-                    </g>
-                  )}
+                  {curveSegments.map((points) => (
+                    <polyline
+                      key={points}
+                      fill="none"
+                      stroke="#EFCF92"
+                      strokeWidth="8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      points={points}
+                    />
+                  ))}
+
+                  {otherSegments.map((points) => (
+                    <polyline
+                      key={points}
+                      fill="none"
+                      stroke="#E879F9"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      points={points}
+                    />
+                  ))}
 
                   {graphNodes.map((node, idx) => {
                     const isSelected = idx === selectedGraphNodeIdx;
+                    if (!node.available) {
+                      return (
+                        <text
+                          key={`${node.label}-${idx}`}
+                          x={node.x}
+                          y={node.y}
+                          textAnchor="middle"
+                          fill="rgba(255,255,255,0.8)"
+                          fontSize="11"
+                          fontWeight="600"
+                          className="cursor-pointer"
+                          onClick={() => setSelectedGraphNodeIdx(idx)}
+                        >
+                          Not available
+                        </text>
+                      );
+                    }
                     return (
                       <g
                         key={`${node.label}-${idx}`}
@@ -765,7 +974,7 @@ export default function App() {
                         />
                         <text
                           x={node.x}
-                          y={node.y - 11}
+                          y={node.y > 120 ? node.y - 14 : node.y + 18}
                           textAnchor="middle"
                           fill={
                             isSelected ? '#ffffff' : 'rgba(255,255,255,0.65)'
@@ -773,46 +982,47 @@ export default function App() {
                           fontSize="11"
                           fontWeight={isSelected ? '700' : '500'}
                         >
-                          {money(node.price)}
+                          {money(node.price as number)}
                         </text>
                       </g>
                     );
                   })}
 
-                  {otherNodes.map((node, idx) => (
-                    <circle
-                      key={`other-${node.label}-${idx}`}
-                      cx={node.x + 22}
-                      cy={node.y}
-                      r="5"
-                      fill="#E879F9"
-                    />
-                  ))}
+                  {otherNodes.map((node, idx) =>
+                    node.available ? (
+                      <circle
+                        key={`other-${node.label}-${idx}`}
+                        cx={node.x + 22}
+                        cy={node.y}
+                        r="5"
+                        fill="#E879F9"
+                      />
+                    ) : null,
+                  )}
                   {otherNodes.map((node, idx) => (
                     <text
                       key={`other-price-${node.label}-${idx}`}
                       x={node.x + 22}
-                      y={node.y + 16}
+                      y={node.available ? (node.y > 120 ? node.y - 14 : node.y + 18) : node.y}
                       textAnchor="middle"
                       fill="#E879F9"
                       fontSize="11"
                       fontWeight="600"
                     >
-                      {money(node.price)}
+                      {node.available ? money(node.price as number) : 'Not available'}
                     </text>
                   ))}
                 </svg>
-
-                {/* Checkpoint Selector Row */}
-                <div className="flex flex-wrap gap-1.5 pt-2 border-t border-white/10">
-                  {graphNodes.map((node, idx) => {
+                <div className="relative mt-2 h-11 border-t border-white/10" style={{ width: chartWidth }}>
+                  {(graphNodes.length ? graphNodes : otherNodes).map((node, idx) => {
                     const isSelected = idx === selectedGraphNodeIdx;
                     return (
                       <button
                         key={`${node.label}-${idx}`}
                         type="button"
                         onClick={() => setSelectedGraphNodeIdx(idx)}
-                        className={`py-1 rounded-lg text-xs tabular-nums transition-colors cursor-pointer ${
+                        style={{ left: node.x }}
+                        className={`absolute top-1.5 -translate-x-1/2 whitespace-nowrap px-2 py-1 rounded-lg text-xs tabular-nums transition-colors cursor-pointer ${
                           isSelected
                             ? 'bg-white text-black font-semibold'
                             : 'text-white/65 hover:text-white hover:bg-white/[0.06]'
@@ -823,41 +1033,55 @@ export default function App() {
                     );
                   })}
                 </div>
+                </div>
               </div>
             </div>
 
             <div id="studio-connect" className="rounded-[26px] bg-white/[0.08] border border-white/20 backdrop-blur-2xl p-5 shadow-[0_20px_60px_rgba(0,0,0,0.8),inset_0_1px_1px_rgba(255,255,255,0.25)]">
               <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-2xl bg-white/[0.14] border border-white/20 flex items-center justify-center">
-                  <Bell className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <div className="text-[15px] font-semibold text-white">
-                    Connect Account for Alerts
-                  </div>
+                    <div className="w-10 h-10 rounded-2xl bg-white/[0.14] border border-white/20 flex items-center justify-center">
+                      <Bell className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <div className="text-[15px] font-semibold text-white">
+                        Connect Account for Alerts
+                      </div>
                   <div className="text-xs text-white/65 mt-0.5">
                     Every price drop sends an email. The target discount sends its own message.
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <button
-                type="button"
+              <label className="block mb-3">
+                <span className="text-xs text-white/70">Email for price alerts</span>
+                    <input
+                      type="email"
+                  value={alertEmail}
+                  onChange={(event) => setAlertEmail(event.target.value)}
+                  placeholder="you@email.com"
+                  aria-label="Email for price alerts"
+                  className="mt-1.5 w-full rounded-2xl bg-black/60 border border-white/20 px-3.5 py-3 text-sm text-white placeholder:text-white/40 focus:outline-none"
+                />
+              </label>
+                      <button
+                        type="button"
                 onClick={() => {
                   void connectMailbox();
                 }}
-                disabled={emailConnecting}
-                className="w-full rounded-2xl px-4 py-3 border bg-white text-black flex items-center justify-between gap-3 cursor-pointer disabled:opacity-60"
+                disabled={emailConnecting || emailIsConnected}
+                className={`w-full rounded-2xl px-4 py-3 border bg-white text-black flex items-center justify-between gap-3 ${
+                  emailConnecting ? 'opacity-60 cursor-default' : emailIsConnected ? 'cursor-default' : 'cursor-pointer'
+                }`}
               >
                 <span className="flex items-center gap-3">
                   <span className="w-9 h-9 rounded-xl bg-black/5 border border-black/10 flex items-center justify-center shrink-0">
                     <Mail className="w-4 h-4" />
-                  </span>
+                        </span>
                   <span className="text-sm font-semibold">
-                    {emailConnecting ? 'Connecting email…' : 'Connect email'}
-                  </span>
-                </span>
-              </button>
+                    {emailConnecting ? 'Connecting email…' : emailIsConnected ? 'Connected' : 'Connect email'}
+                      </span>
+                            </span>
+                          </button>
               {emailNotice && (
                 <p className="mt-3 text-xs text-white/85">{emailNotice}</p>
               )}

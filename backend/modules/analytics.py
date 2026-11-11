@@ -20,7 +20,11 @@ def calculate_volatility(product_id: int) -> dict:
     volatility is how much the price jumps around (0 means it never moves).
     deal_score is out of 10. 10 means the newest price is the lowest seen.
     """
-    history = database.get_price_history(product_id)
+    history = [
+        point
+        for point in database.get_price_history(product_id)
+        if point.get("price") is not None
+    ]
     if len(history) == 0:
         return {
             "product_id": product_id,

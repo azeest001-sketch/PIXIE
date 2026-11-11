@@ -21,8 +21,10 @@ import requests
 # ENVIRONMENT SETUP
 
 try:
+    from pathlib import Path
     from dotenv import load_dotenv
-    load_dotenv()
+    # The key in the project .env must win over an older key left in the process.
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 except ImportError:
     pass  # fall back to normal environment variables
 
@@ -195,16 +197,18 @@ def normalize_response(raw, platform=None, product_id=None):
     else:
         print(f"[api_client] Unsupported platform: {platform}")
         return None
-    
+
+    # The product came back, but the store left the selling price blank.
+    # Return the product with price=None so a check can say it is unavailable
+    # instead of treating this like a failed request.
     if price is None:
         print("[api_client] Price missing in response.")
-        return None
-    
+
     # Convert relative URL into a full URL
     if platform == "flipkart" and product_url:
         if product_url.startswith("/"):
             product_url = "https://www.flipkart.com" + product_url
-    
+
     return {
         "title": title,
         "platform": platform,

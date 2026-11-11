@@ -5,6 +5,7 @@ Teammates fill in modules/*.py. Keep route shapes stable so the frontend
 does not break.
 """
 
+import re
 import uuid
 from pathlib import Path
 
@@ -39,6 +40,13 @@ class GoalRequest(BaseModel):
 
 class ActiveRequest(BaseModel):
     active: bool
+
+
+class ConnectRequest(BaseModel):
+    email: str
+
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def read_product_link(url: str) -> dict:
@@ -176,6 +184,8 @@ def product_history(product_id: int) -> dict:
     return {
         "product_id": product_id,
         "platform": product.get("platform") if product else "",
+        "price_available": product.get("price_available", True) if product else True,
+        "checked_at": product.get("checked_at") if product else None,
         "history": database.get_price_history(product_id),
         "analytics": analytics.calculate_volatility(product_id),
         "comparison": comparison,
@@ -213,7 +223,17 @@ def check_now() -> dict:
     return {"results": monitor.check_tracked_products()}
 
 
+@app.get("/api/alerts/email")
+def alert_email() -> dict:
+    """The address saved from the page. Empty until the user connects one."""
+    return {"email": database.get_setting("alert_email")}
+
+
 @app.post("/api/alerts/connect")
-def connect_alert() -> dict:
-    """Send the one-time email that confirms the mailbox is connected."""
+def connect_alert(body: ConnectRequest) -> dict:
+    """Save the address typed on the page, then send the confirmation email."""
+    email = body.email.strip()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    database.set_setting("alert_email", email)
     return notifier.send_connection_email()

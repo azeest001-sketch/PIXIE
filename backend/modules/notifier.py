@@ -18,6 +18,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from . import database
+
 # Read the project .env every time, so a new app password is picked up
 # without leftover empty values from an earlier start.
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
@@ -37,13 +39,15 @@ def mail_settings() -> dict:
     # Google prints the app password in groups of four. The real password has no spaces.
     password = os.getenv("SMTP_PASSWORD", "").replace(" ", "").strip()
     username = os.getenv("SMTP_EMAIL", "").strip()
+    # The address typed on the page wins. .env is only a fallback.
+    typed = database.get_setting("alert_email").strip()
     return {
         "host": os.getenv("SMTP_HOST", "smtp.gmail.com").strip() or "smtp.gmail.com",
         "port": int(os.getenv("SMTP_PORT", "587")),
         "username": username,
         "password": password,
         "from_email": os.getenv("ALERT_FROM_EMAIL", "").strip() or username,
-        "to_email": os.getenv("ALERT_TO_EMAIL", "").strip() or username,
+        "to_email": typed or os.getenv("ALERT_TO_EMAIL", "").strip() or username,
     }
 
 
@@ -79,10 +83,11 @@ def send_email(subject: str, body: str) -> dict:
         missing.append("SMTP_EMAIL")
     if not settings["password"]:
         missing.append("SMTP_PASSWORD")
-    if not settings["to_email"]:
-        missing.append("ALERT_TO_EMAIL")
     if missing:
-        result["message"] = "Email not sent. Fill in " + ", ".join(missing) + " in .env."
+        result["message"] = "Email not sent. Keep " + ", ".join(missing) + " in .env."
+        return result
+    if not settings["to_email"]:
+        result["message"] = "Email not sent. Add your email on the page."
         return result
 
     message = EmailMessage()

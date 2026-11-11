@@ -25,7 +25,7 @@ FILLER_WORDS = SKIP_WORDS | {
 # The kind of product, kept in the search when the title says it.
 PRODUCT_KINDS = (
     "projector", "earphones", "headphones", "earphone", "headphone",
-    "watch", "laptop", "phone",
+    "keyboard", "mouse", "watch", "laptop", "phone",
 )
 
 
@@ -100,14 +100,43 @@ def useful_words(title: str) -> set[str]:
     return words
 
 
+def compact_tokens(title: str) -> set[str]:
+    """
+    Words used for a match.
+
+    'GM 60' is also stored as gm60, and '4 GB' as 4gb, so the two
+    stores can spell a model in either way.
+    """
+    words = [same_word(word) for word in loose_words(title)]
+    tokens = set(words)
+    units = {"gb", "tb", "mb", "w", "mah", "hz", "mm"}
+    for index, word in enumerate(words[:-1] if len(words) > 1 else []):
+        nxt = words[index + 1]
+        if word.isalpha() and nxt.isdigit():
+            tokens.add(word + nxt)
+        if word.isdigit() and nxt in units:
+            tokens.add(word + nxt)
+    return tokens
+
+
+def keyword_tokens(title: str) -> set[str]:
+    """The short search phrase, including a joined model such as gm60."""
+    return compact_tokens(short_query(title))
+
+
+def model_tokens(title: str) -> set[str]:
+    """Tokens that contain a digit, such as gm60 or 4gb. These must agree."""
+    return {token for token in keyword_tokens(title) if any(ch.isdigit() for ch in token)}
+
+
 def title_score(original: str, candidate: str) -> float:
     """
-    1.0 means every word we searched for appears in the result.
+    1.0 means every keyword we searched for appears in the result.
     The score uses the short search phrase, not the whole title,
     because store titles add a lot of extra words.
     """
-    query_words = {same_word(word) for word in short_query(original).split()}
-    candidate_words = useful_words(candidate)
+    query_words = keyword_tokens(original)
+    candidate_words = compact_tokens(candidate)
     if not query_words or not candidate_words:
         return 0
     shared = query_words & candidate_words
@@ -182,14 +211,27 @@ def different_model(original: str, candidate: str) -> bool:
     return False
 
 
+def product_kind(title: str) -> str | None:
+    """The first product type in a title, such as mouse before laptop."""
+    kinds = sorted(PRODUCT_KINDS, key=len, reverse=True)
+    for word in loose_words(title):
+        lower = word.lower()
+        for kind in kinds:
+            if lower == kind:
+                return kind
+    return None
+
+
 def best_match(original_title: str, hits: list) -> dict | None:
     """
-    Pick the closest search result.
+    Pick a listing only when the keywords agree.
 
-    The listing that shares the most words wins. When two listings
-    are equally close, the first one from the store search is kept.
-    A near match is saved instead of being left blank.
+    The model token, such as GM60, has to be in the other title.
+    A mouse is not matched to a keyboard. If nothing is that close,
+    nothing is saved.
     """
+    original_kind = product_kind(original_title)
+    required_models = model_tokens(original_title)
     scored = []
     for hit in hits[:12]:
         if not isinstance(hit, dict):
@@ -197,7 +239,17 @@ def best_match(original_title: str, hits: list) -> dict | None:
         title = hit_title(hit)
         if not title or not hit_id(hit):
             continue
-        scored.append((title_score(original_title, title), hit))
+        candidate_kind = product_kind(title)
+        if original_kind and candidate_kind and candidate_kind != original_kind:
+            continue
+        candidate_tokens = compact_tokens(title)
+        if required_models and not required_models <= candidate_tokens:
+            continue
+        score = title_score(original_title, title)
+        # One missing descriptive word can pass. A random shared brand cannot.
+        if score < 0.8:
+            continue
+        scored.append((score, hit))
 
     if not scored:
         return None
@@ -208,6 +260,13 @@ def best_match(original_title: str, hits: list) -> dict | None:
 
 def price_note(source: dict, other: dict) -> str:
     """One sentence saying which store is cheaper right now."""
+    missing = [
+        (item.get("platform") or "store").title()
+        for item in (source, other)
+        if item.get("price_available") is False or item.get("price") is None
+    ]
+    if missing:
+        return "Price is not available on " + " and ".join(missing) + "."
     gap = round(float(source["price"]) - float(other["price"]), 2)
     if gap > 0:
         return f"{other['platform'].title()} is ₹{abs(gap):,.0f} cheaper"

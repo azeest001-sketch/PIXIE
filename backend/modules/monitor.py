@@ -41,16 +41,24 @@ def check_tracked_products() -> list[dict]:
             results.append(result)
             time.sleep(CALL_GAP)
             continue
-        
-        # Out-of-stock prices can be stale -> don't save or alert on them
-        if data.get("in_stock") is False:
-            print(f"[monitor] {product.get('id')} is out of stock, skipping.")
+
+        # The store answered, but the selling price is gone. Remember that
+        # so the page can say so. A later check with a price clears it.
+        if data.get("price") is None:
+            print(f"[monitor] {product.get('id')}: price is not available.")
+            database.mark_price_unavailable(product.get("id"))
+            result["price_available"] = False
             results.append(result)
             time.sleep(CALL_GAP)
             continue
         
-        price = data["price"]
-        previous_price = product.get("price")
+        # Keep the exact selling price. One paise lower still counts.
+        price = round(float(data["price"]), 2)
+        # Compare with the last number we saved, even if the price was missing
+        # on the check before this one.
+        previous_price = product.get("last_price")
+        if previous_price is None:
+            previous_price = product.get("price")
         result["current_price"] = price
         
         # Save the real data point for the price history graph
@@ -62,8 +70,11 @@ def check_tracked_products() -> list[dict]:
             time.sleep(CALL_GAP)
             continue
         
-        # Every lower price sends an email. The target discount gets its own message.
-        price_dropped = previous_price is not None and price < float(previous_price)
+        # Any lower price updates the saved number. The target is only for the email wording.
+        price_dropped = (
+            previous_price is not None
+            and round(float(price), 2) < round(float(previous_price), 2)
+        )
         hit_target = target_price is not None and price <= float(target_price)
         if price_dropped:
             result["dropped"] = True
